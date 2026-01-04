@@ -1,0 +1,370 @@
+version: '3.8'
+
+# =============================================================================
+# Network Definitions - Multi-tier Architecture for Security Isolation
+# Task 2.1: Overlay Network Design with Encryption
+# =============================================================================
+networks:
+  public:
+    driver: overlay
+    driver_opts:
+      encrypted: "true"
+    # Public facing network for ingress/load balancer services
+    # Encrypted to protect traffic from Traefik to services
+    
+  frontend:
+    driver: overlay
+    driver_opts:
+      encrypted: "true"
+    # Frontend to backend communication - encrypted overlay
+    # Isolates frontend services from direct database access
+    
+  backend:
+    driver: overlay
+    driver_opts:
+      encrypted: "true"
+    internal: true
+    # Backend to database - INTERNAL network (no external access)
+    # Most secure tier - database only accessible from backend services
+    
+  monitoring:
+    driver: overlay
+    driver_opts:
+      encrypted: "true"
+    # Separate network for Prometheus/Grafana monitoring stack
+    # Allows monitoring all services across tiers
+
+# Volume definitions for data persistence
+volumes:
+  postgres_data:
+    # PostgreSQL data persistence
+  redis_data:
+    # Redis data persistence (optional but good practice)
+  grafana_data:
+    # For monitoring stack later
+
+# Secrets definitions - more secure than environment variables
+secrets:
+  db_password:
+    external: true
+    # Created separately for security - see secrets setup below
+  db_user:
+    external: true
+  api_key:
+    external: true
+
+# Config files - for application configuration
+configs:
+  backend_config:
+    external: true
+
+services:
+  # Frontend service - Next.js application
+  frontend:
+    image: node:18-alpine
+    # Using a smaller alpine image to reduce size
+    networks:
+      - public
+      - frontend
+    deploy:
+      replicas: 3
+      # Multiple replicas for high availability and load distribution
+      update_config:
+        parallelism: 1
+        # Update one container at a time to minimize disruption
+        delay: 10s
+        # Wait 10s between updates to ensure stability
+        failure_action: rollback
+        # Auto rollback if update fails
+        monitor: 30s
+        # Monitor for 30s after update before considering it successful
+      rollback_config:
+        parallelism: 1
+        delay: 5s
+      placement:
+        preferences:
+          - spread: node.id
+        # Spread replicas across different nodes for HA
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+          # Limit resources to prevent one service from hogging everything
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+          # Reserve minimum resources
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.frontend.rule=Host(`app.example.com`)"
+        - "traefik.http.services.frontend.loadbalancer.server.port=3000"
+        # Traefik will auto-discover this service and route to it
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+      # Give the app time to start before health checking
+    # For demo purposes - in real scenario you'd use a pre-built image
+    command: sh -c "apk add --no-cache git && git clone https://github.com/vercel/next.js.git /app && cd /app/examples/blog-starter && npm install && npm run build && npm start"
+    working_dir: /app
+
+  # Backend API service - Node.js/Express
+  # This is the Task 1.2 "deep dive" service with detailed configuration
+  backend:
+    image: node:18-alpine
+    networks:
+      - frontend
+      - backend
+      # Connected to both frontend (to receive requests) and backend (to access DB)
+    secrets:
+      - db_password
+      - db_user
+      - api_key
+      # Mounting secrets as files, NOT environment variables (more secure)
+    configs:
+      - source: backend_config
+        target: /app/config/app.config.json
+        # Config file mounted at specific path
+    deploy:
+      mode: replicated
+      replicas: 3
+      # Task 1.2: Deployment mode with multiple replicas
+      
+      update_config:
+        parallelism: 2
+        # Task 1.2: Update 2 replicas at a time
+        delay: 15s
+        # Task 1.2: Wait 15 seconds between batch updates
+        failure_action: rollback
+        # Task 1.2: Rollback if update fails
+        monitor: 45s
+        max_failure_ratio: 0.3
+        # Allow up to 30% failures before triggering rollback
+        order: start-first
+        # Start new containers before stopping old ones (less downtime)
+      
+      rollback_config:
+        parallelism: 2
+        # Task 1.2: Automatic rollback configuration
+        delay: 10s
+        failure_action: pause
+        monitor: 30s
+        # If rollback fails, pause for manual intervention
+      
+      placement:
+        preferences:
+          - spread: node.id
+        # Task 1.2: Spread across available nodes
+        constraints:
+          - node.role == worker
+          # Only deploy on worker nodes (not managers for security)
+      
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1024M
+          # Task 1.2: CPU and memory constraints
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+          # Task 1.2: Resource reservations ensure minimum resources
+      
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 120s
+      
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.backend.rule=Host(`app.example.com`) && PathPrefix(`/api`)"
+        - "traefik.http.services.backend.loadbalancer.server.port=5000"
+        - "traefik.http.services.backend.loadbalancer.sticky.cookie=true"
+        # Sticky sessions for backend API
+    
+    logging:
+      driver: "json-file"
+      # Task 1.2: Logging driver configuration
+      options:
+        max-size: "10m"
+        max-file: "3"
+        # Log rotation: max 10MB per file, keep 3 files
+    
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    
+    environment:
+      NODE_ENV: production
+      PORT: 5000
+      # Secret paths - app reads from these file paths
+      DB_USER_FILE: /run/secrets/db_user
+      DB_PASSWORD_FILE: /run/secrets/db_password
+      API_KEY_FILE: /run/secrets/api_key
+    
+    command: sh -c "apk add --no-cache git && git clone https://github.com/hagopj13/node-express-boilerplate.git /app && cd /app && npm install && npm start"
+
+  # PostgreSQL database - single replica with persistence
+  postgres:
+    image: postgres:15-alpine
+    networks:
+      - backend
+      # Only accessible from backend network - isolated
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Named volume for persistence
+    secrets:
+      - db_password
+      - db_user
+    deploy:
+      replicas: 1
+      # Single replica - stateful service
+      placement:
+        constraints:
+          - node.labels.database == true
+          # Deploy only on nodes labeled for database workloads
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 2048M
+        reservations:
+          cpus: '0.5'
+          memory: 1024M
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 5
+    environment:
+      POSTGRES_USER_FILE: /run/secrets/db_user
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+      POSTGRES_DB: appdb
+      # Postgres natively supports reading credentials from files
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis cache - for session/caching
+  redis:
+    image: redis:7-alpine
+    networks:
+      - backend
+    volumes:
+      - redis_data:/data
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == worker
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    command: redis-server --appendonly yes
+    # Enable persistence
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ==========================================================================
+  # Traefik - Reverse Proxy and Load Balancer
+  # Task 2.2: Ingress and Load Balancing with SSL, Rate Limiting, Security
+  # ==========================================================================
+  traefik:
+    image: traefik:v2.10
+    networks:
+      - public
+      - frontend
+      # Connected to public (ingress) and frontend (to reach services)
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080"
+      # 80: HTTP (redirects to HTTPS)
+      # 443: HTTPS (SSL termination)
+      # 8080: Dashboard (should be restricted in production)
+    deploy:
+      replicas: 2
+      # Multiple replicas for High Availability
+      placement:
+        constraints:
+          - node.role == manager
+          # Traefik needs Docker socket access, deploy on manager nodes
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+      labels:
+        # Dashboard router with basic auth
+        - "traefik.enable=true"
+        - "traefik.http.routers.dashboard.rule=Host(`traefik.example.com`)"
+        - "traefik.http.routers.dashboard.service=api@internal"
+        - "traefik.http.routers.dashboard.entrypoints=websecure"
+        - "traefik.http.routers.dashboard.tls=true"
+        # Middleware: Security headers for all routes
+        - "traefik.http.middlewares.security-headers.headers.frameDeny=true"
+        - "traefik.http.middlewares.security-headers.headers.sslRedirect=true"
+        - "traefik.http.middlewares.security-headers.headers.browserXssFilter=true"
+        - "traefik.http.middlewares.security-headers.headers.contentTypeNosniff=true"
+        - "traefik.http.middlewares.security-headers.headers.stsSeconds=31536000"
+        - "traefik.http.middlewares.security-headers.headers.stsIncludeSubdomains=true"
+        # Middleware: Rate limiting (100 requests/second average, 200 burst)
+        - "traefik.http.middlewares.rate-limit.ratelimit.average=100"
+        - "traefik.http.middlewares.rate-limit.ratelimit.burst=200"
+        - "traefik.http.middlewares.rate-limit.ratelimit.period=1s"
+        # HTTP to HTTPS redirect middleware
+        - "traefik.http.middlewares.https-redirect.redirectscheme.scheme=https"
+        - "traefik.http.middlewares.https-redirect.redirectscheme.permanent=true"
+        # Apply middlewares to routers
+        - "traefik.http.routers.http-catchall.rule=HostRegexp(`{host:.+}`)"
+        - "traefik.http.routers.http-catchall.entrypoints=web"
+        - "traefik.http.routers.http-catchall.middlewares=https-redirect"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+      # Read-only Docker socket access for Swarm service discovery
+    command:
+      # API and Dashboard
+      - "--api.dashboard=true"
+      - "--api.insecure=false"
+      # Docker Swarm provider configuration
+      - "--providers.docker.swarmMode=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--providers.docker.network=public"
+      - "--providers.docker.watch=true"
+      # Entrypoints configuration
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      # Let's Encrypt ACME configuration (production)
+      - "--certificatesresolvers.letsencrypt.acme.tlschallenge=true"
+      - "--certificatesresolvers.letsencrypt.acme.email=admin@example.com"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+      # Logging
+      - "--log.level=INFO"
+      - "--accesslog=true"
+      - "--accesslog.format=json"
+      # Metrics for Prometheus
+      - "--metrics.prometheus=true"
+      - "--metrics.prometheus.buckets=0.1,0.3,1.2,5.0"
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3

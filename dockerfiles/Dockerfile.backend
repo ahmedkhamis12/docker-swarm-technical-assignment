@@ -1,0 +1,159 @@
+# =============================================================================
+# Backend Dockerfile - Optimized Multi-Stage Build
+# Task 7.2: Dockerfile Optimization
+# =============================================================================
+#
+# Optimizations applied:
+# - Multi-stage build to minimize final image size
+# - Proper layer caching for dependencies
+# - Non-root user execution
+# - Health check instructions
+# - Security best practices
+# - Only production dependencies in final image
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Stage 1: Dependencies
+# Install ALL dependencies (including devDependencies for build)
+# -----------------------------------------------------------------------------
+FROM node:18-alpine AS deps
+
+# Install build tools for native dependencies
+RUN apk add --no-cache python3 make g++
+
+WORKDIR /app
+
+# Copy package files for dependency caching
+COPY package.json package-lock.json* yarn.lock* ./
+
+# Install all dependencies (including devDependencies)
+RUN \
+  if [ -f yarn.lock ]; then yarn --frozen-lockfile; \
+  elif [ -f package-lock.json ]; then npm ci; \
+  else npm install; \
+  fi
+
+# -----------------------------------------------------------------------------
+# Stage 2: Builder
+# Build/compile the application (TypeScript, etc.)
+# -----------------------------------------------------------------------------
+FROM node:18-alpine AS builder
+
+WORKDIR /app
+
+# Copy dependencies
+COPY --from=deps /app/node_modules ./node_modules
+
+# Copy source code
+COPY . .
+
+# Build the application (if TypeScript or build step needed)
+RUN npm run build --if-present
+
+# -----------------------------------------------------------------------------
+# Stage 3: Production Dependencies
+# Install only production dependencies
+# -----------------------------------------------------------------------------
+FROM node:18-alpine AS prod-deps
+
+WORKDIR /app
+
+# Copy package files
+COPY package.json package-lock.json* yarn.lock* ./
+
+# Install production dependencies only
+RUN \
+  if [ -f yarn.lock ]; then yarn --frozen-lockfile --production; \
+  elif [ -f package-lock.json ]; then npm ci --production; \
+  else npm install --production; \
+  fi
+
+# -----------------------------------------------------------------------------
+# Stage 4: Production Runner
+# Minimal production image
+# -----------------------------------------------------------------------------
+FROM node:18-alpine AS runner
+
+WORKDIR /app
+
+# Security: Set environment
+ENV NODE_ENV production
+
+# Security: Create non-root user
+RUN addgroup --system --gid 1001 nodejs && \
+    adduser --system --uid 1001 --ingroup nodejs appuser
+
+# Install dumb-init for proper signal handling
+RUN apk add --no-cache dumb-init wget
+
+# Copy production dependencies
+COPY --from=prod-deps --chown=appuser:nodejs /app/node_modules ./node_modules
+
+# Copy built application
+COPY --from=builder --chown=appuser:nodejs /app/dist ./dist
+COPY --from=builder --chown=appuser:nodejs /app/package.json ./
+
+# If no dist folder (plain JS), copy src instead
+# COPY --from=builder --chown=appuser:nodejs /app/src ./src
+
+# Create directory for secrets (Swarm mounts secrets here)
+RUN mkdir -p /run/secrets && chown appuser:nodejs /run/secrets
+
+# Security: Switch to non-root user
+USER appuser
+
+# Expose the application port
+EXPOSE 5000
+
+# Environment variables
+ENV PORT=5000
+ENV HOST=0.0.0.0
+
+# Health check instruction
+# Ensures the API is responsive
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+  CMD wget --quiet --tries=1 --spider http://localhost:5000/health || exit 1
+
+# Use dumb-init for proper PID 1 handling
+# This ensures signals are properly forwarded to the Node.js process
+ENTRYPOINT ["dumb-init", "--"]
+
+# Start the application
+CMD ["node", "dist/index.js"]
+
+# =============================================================================
+# Alternative CMD for plain JavaScript (no build step):
+#   CMD ["node", "src/index.js"]
+#
+# For Express boilerplate:
+#   CMD ["node", "src/app.js"]
+# =============================================================================
+
+# =============================================================================
+# Build instructions:
+#
+# Standard build:
+#   docker build -f Dockerfile.backend -t backend:latest .
+#
+# With build arguments:
+#   docker build -f Dockerfile.backend \
+#     --build-arg NODE_ENV=production \
+#     -t backend:latest .
+#
+# Multi-platform build (BONUS):
+#   docker buildx build -f Dockerfile.backend \
+#     --platform linux/amd64,linux/arm64 \
+#     -t backend:latest --push .
+# =============================================================================
+
+# =============================================================================
+# Security Notes:
+# 
+# 1. Non-root user: Application runs as 'appuser' (uid 1001)
+# 2. Read-only filesystem: Can be enforced with --read-only flag
+# 3. No shell access in production if needed:
+#    RUN rm /bin/sh /bin/ash /bin/bash 2>/dev/null || true
+# 4. Secrets: Mount at /run/secrets via Swarm secrets
+# 5. Health check: Regularly checks /health endpoint
+# 6. dumb-init: Proper signal handling (SIGTERM, etc.)
+# =============================================================================

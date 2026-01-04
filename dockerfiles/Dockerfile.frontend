@@ -1,0 +1,124 @@
+# =============================================================================
+# Frontend Dockerfile - Optimized Multi-Stage Build
+# Task 7.2: Dockerfile Optimization
+# =============================================================================
+#
+# Optimizations applied:
+# - Multi-stage build to minimize final image size
+# - Proper layer caching for dependencies
+# - Non-root user execution
+# - Health check instructions
+# - Security best practices (no dev dependencies in production)
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Stage 1: Dependencies
+# Install dependencies in a separate stage for better caching
+# -----------------------------------------------------------------------------
+FROM node:18-alpine AS deps
+
+# Check https://github.com/nodejs/docker-node/tree/b4117f9333da4138b03a546ec926ef50a31506c3#nodealpine
+# for why libc6-compat might be needed
+RUN apk add --no-cache libc6-compat
+
+WORKDIR /app
+
+# Copy only package files first for dependency caching
+# This layer only rebuilds when package files change
+COPY package.json package-lock.json* yarn.lock* pnpm-lock.yaml* ./
+
+# Install dependencies based on lock file present
+RUN \
+  if [ -f yarn.lock ]; then yarn --frozen-lockfile; \
+  elif [ -f package-lock.json ]; then npm ci; \
+  elif [ -f pnpm-lock.yaml ]; then corepack enable pnpm && pnpm i --frozen-lockfile; \
+  else echo "No lockfile found." && npm install; \
+  fi
+
+# -----------------------------------------------------------------------------
+# Stage 2: Builder
+# Build the application
+# -----------------------------------------------------------------------------
+FROM node:18-alpine AS builder
+
+WORKDIR /app
+
+# Copy dependencies from deps stage
+COPY --from=deps /app/node_modules ./node_modules
+
+# Copy application source
+COPY . .
+
+# Disable Next.js telemetry during build
+ENV NEXT_TELEMETRY_DISABLED 1
+
+# Build the application
+RUN \
+  if [ -f yarn.lock ]; then yarn build; \
+  elif [ -f package-lock.json ]; then npm run build; \
+  elif [ -f pnpm-lock.yaml ]; then corepack enable pnpm && pnpm run build; \
+  else npm run build; \
+  fi
+
+# -----------------------------------------------------------------------------
+# Stage 3: Production Runner
+# Minimal production image
+# -----------------------------------------------------------------------------
+FROM node:18-alpine AS runner
+
+WORKDIR /app
+
+# Security: Set to production environment
+ENV NODE_ENV production
+ENV NEXT_TELEMETRY_DISABLED 1
+
+# Security: Create non-root user
+RUN addgroup --system --gid 1001 nodejs && \
+    adduser --system --uid 1001 nextjs
+
+# Copy only necessary files from builder
+# Next.js specific - standalone output
+COPY --from=builder /app/public ./public
+
+# Create .next directory with correct permissions
+RUN mkdir .next && chown nextjs:nodejs .next
+
+# Copy built assets with correct ownership
+# For standalone output (recommended for Docker)
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+
+# Security: Switch to non-root user
+USER nextjs
+
+# Expose the application port
+EXPOSE 3000
+
+# Set the port environment variable
+ENV PORT 3000
+ENV HOSTNAME "0.0.0.0"
+
+# Health check instruction
+# Verifies the application is responding to HTTP requests
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+  CMD wget --quiet --tries=1 --spider http://localhost:3000/ || exit 1
+
+# Start the application
+CMD ["node", "server.js"]
+
+# =============================================================================
+# Build instructions:
+# 
+# Standard build:
+#   docker build -f Dockerfile.frontend -t frontend:latest .
+#
+# With build arguments:
+#   docker build -f Dockerfile.frontend \
+#     --build-arg NEXT_PUBLIC_API_URL=https://api.example.com \
+#     -t frontend:latest .
+#
+# Multi-platform build (BONUS):
+#   docker buildx build -f Dockerfile.frontend \
+#     --platform linux/amd64,linux/arm64 \
+#     -t frontend:latest --push .
+# =============================================================================
