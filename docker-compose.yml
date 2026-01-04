@@ -96,7 +96,8 @@ services:
           # Reserve minimum resources
       labels:
         - "traefik.enable=true"
-        - "traefik.http.routers.frontend.rule=Host(`app.example.com`)"
+        - "traefik.http.routers.frontend.rule=PathPrefix(`/`)"
+        - "traefik.http.routers.frontend.priority=1"
         - "traefik.http.services.frontend.loadbalancer.server.port=3000"
         # Traefik will auto-discover this service and route to it
     healthcheck:
@@ -193,7 +194,8 @@ services:
       
       labels:
         - "traefik.enable=true"
-        - "traefik.http.routers.backend.rule=Host(`app.example.com`) && PathPrefix(`/api`)"
+        - "traefik.http.routers.backend.rule=PathPrefix(`/api`)"
+        - "traefik.http.routers.backend.priority=10"
         - "traefik.http.services.backend.loadbalancer.server.port=5000"
         - "traefik.http.services.backend.loadbalancer.sticky.cookie=true"
         # Sticky sessions for backend API
