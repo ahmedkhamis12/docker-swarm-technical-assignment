@@ -1,0 +1,33 @@
+# Helm Chart for Microservices Application
+# Task 6.2: Docker Compose to Helm Conversion
+#
+# This is the main Chart.yaml file that defines the chart metadata
+# =============================================================================
+apiVersion: v2
+name: microservices-app
+description: A Helm chart for deploying the microservices application stack
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+
+# Chart dependencies (can be enabled/disabled via values.yaml)
+dependencies:
+  - name: postgresql
+    version: "12.x.x"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: postgresql.enabled
+  - name: redis
+    version: "17.x.x"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: redis.enabled
+
+keywords:
+  - microservices
+  - nodejs
+  - nextjs
+  - postgresql
+  - redis
+
+maintainers:
+  - name: DevOps Team
+    email: devops@example.com
