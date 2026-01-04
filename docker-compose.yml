@@ -106,8 +106,22 @@ services:
       retries: 3
       start_period: 10s
       # Give the app time to start before health checking
-    # Simple HTTP server for demo - in production use pre-built image
-    command: sh -c "mkdir -p /app && echo '<html><body><h1>Frontend Service</h1><p>Docker Swarm Demo</p></body></html>' > /app/index.html && cd /app && npx -y http-server -p 3000"
+    # Simple HTTP server for demo - uses Node directly, more reliable than npx
+    command:
+      - sh
+      - -c
+      - |
+        mkdir -p /app &&
+        cd /app &&
+        cat > server.js << 'EOF'
+        const http = require('http');
+        const server = http.createServer((req, res) => {
+          res.writeHead(200, {'Content-Type': 'text/html'});
+          res.end('<html><body><h1>Frontend Service</h1><p>Docker Swarm Demo</p></body></html>');
+        });
+        server.listen(3000, () => console.log('Frontend running on port 3000'));
+        EOF
+        node server.js
     working_dir: /app
 
   # Backend API service - Node.js/Express
@@ -220,7 +234,7 @@ services:
         const express = require('express');
         const app = express();
         app.get('/health', (req, res) => res.json({status: 'healthy'}));
-        app.get('/api/*', (req, res) => res.json({message: 'Backend API', path: req.path}));
+        app.use('/api', (req, res) => res.json({message: 'Backend API', path: req.path}));
         app.listen(5000, () => console.log('Backend running on port 5000'));
         EOF
         node server.js
@@ -369,10 +383,10 @@ services:
       # Entrypoints configuration
       - "--entrypoints.web.address=:80"
       - "--entrypoints.websecure.address=:443"
-      # Let's Encrypt ACME configuration (production)
-      - "--certificatesresolvers.letsencrypt.acme.tlschallenge=true"
-      - "--certificatesresolvers.letsencrypt.acme.email=admin@example.com"
-      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+      # Let's Encrypt ACME - disabled for demo (no valid domain)
+      # - "--certificatesresolvers.letsencrypt.acme.tlschallenge=true"
+      # - "--certificatesresolvers.letsencrypt.acme.email=admin@example.com"
+      # - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
       # Logging
       - "--log.level=INFO"
       - "--accesslog=true"
