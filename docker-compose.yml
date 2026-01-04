@@ -104,10 +104,10 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 40s
+      start_period: 10s
       # Give the app time to start before health checking
-    # For demo purposes - in real scenario you'd use a pre-built image
-    command: sh -c "apk add --no-cache git && git clone https://github.com/vercel/next.js.git /app && cd /app/examples/blog-starter && npm install && npm run build && npm start"
+    # Simple HTTP server for demo - in production use pre-built image
+    command: sh -c "mkdir -p /app && echo '<html><body><h1>Frontend Service</h1><p>Docker Swarm Demo</p></body></html>' > /app/index.html && cd /app && npx -y http-server -p 3000"
     working_dir: /app
 
   # Backend API service - Node.js/Express
@@ -157,9 +157,9 @@ services:
         preferences:
           - spread: node.id
         # Task 1.2: Spread across available nodes
-        constraints:
-          - node.role == worker
-          # Only deploy on worker nodes (not managers for security)
+        # constraints:
+        #   - node.role == worker
+          # Commented out for single-node swarm compatibility
       
       resources:
         limits:
@@ -197,7 +197,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 60s
+      start_period: 10s
     
     environment:
       NODE_ENV: production
@@ -207,7 +207,23 @@ services:
       DB_PASSWORD_FILE: /run/secrets/db_password
       API_KEY_FILE: /run/secrets/api_key
     
-    command: sh -c "apk add --no-cache git && git clone https://github.com/hagopj13/node-express-boilerplate.git /app && cd /app && npm install && npm start"
+    # Simple Express server for demo - in production use pre-built image
+    command:
+      - sh
+      - -c
+      - |
+        mkdir -p /app &&
+        cd /app &&
+        npm init -y &&
+        npm install express &&
+        cat > server.js << 'EOF'
+        const express = require('express');
+        const app = express();
+        app.get('/health', (req, res) => res.json({status: 'healthy'}));
+        app.get('/api/*', (req, res) => res.json({message: 'Backend API', path: req.path}));
+        app.listen(5000, () => console.log('Backend running on port 5000'));
+        EOF
+        node server.js
 
   # PostgreSQL database - single replica with persistence
   postgres:
@@ -224,10 +240,10 @@ services:
     deploy:
       replicas: 1
       # Single replica - stateful service
-      placement:
-        constraints:
-          - node.labels.database == true
-          # Deploy only on nodes labeled for database workloads
+      # placement:
+      #   constraints:
+      #     - node.labels.database == true
+      # Commented out for single-node swarm compatibility
       resources:
         limits:
           cpus: '1.0'
@@ -259,9 +275,10 @@ services:
       - redis_data:/data
     deploy:
       replicas: 1
-      placement:
-        constraints:
-          - node.role == worker
+      # placement:
+      #   constraints:
+      #     - node.role == worker
+      # Commented out for single-node swarm compatibility
       resources:
         limits:
           cpus: '0.5'
@@ -360,6 +377,9 @@ services:
       - "--log.level=INFO"
       - "--accesslog=true"
       - "--accesslog.format=json"
+      # Enable ping endpoint for healthcheck
+      - "--ping=true"
+      - "--ping.entrypoint=web"
       # Metrics for Prometheus
       - "--metrics.prometheus=true"
       - "--metrics.prometheus.buckets=0.1,0.3,1.2,5.0"
