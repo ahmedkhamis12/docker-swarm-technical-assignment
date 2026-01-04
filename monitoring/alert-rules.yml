@@ -1,0 +1,261 @@
+# Prometheus Alerting Rules
+# Task 4.3: Alerting Configuration for Docker Swarm
+# =============================================================================
+
+groups:
+  # ==========================================================================
+  # Service Replica Alerts
+  # Task 4.3: Service replica count drops below desired state
+  # ==========================================================================
+  - name: swarm-service-alerts
+    rules:
+      - alert: ServiceReplicasBelowDesired
+        expr: |
+          sum by (service_name) (
+            swarm_service_tasks_running{state="running"}
+          ) < sum by (service_name) (
+            swarm_service_replicas_configured
+          )
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Service {{ $labels.service_name }} has fewer replicas than desired"
+          description: "Service {{ $labels.service_name }} is running {{ $value }} replicas but more are configured."
+          runbook_url: "https://wiki.example.com/runbooks/service-underreplicated"
+
+      - alert: ServiceNoReplicas
+        expr: |
+          sum by (service_name) (
+            swarm_service_tasks_running{state="running"}
+          ) == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Service {{ $labels.service_name }} has no running replicas"
+          description: "Service {{ $labels.service_name }} has 0 running tasks. Immediate attention required!"
+          runbook_url: "https://wiki.example.com/runbooks/service-down"
+
+  # ==========================================================================
+  # Node Health Alerts
+  # Task 4.3: Node goes down or becomes unreachable
+  # ==========================================================================
+  - name: node-alerts
+    rules:
+      - alert: NodeDown
+        expr: up{job="node-exporter"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Node {{ $labels.instance }} is down"
+          description: "Node exporter on {{ $labels.instance }} has been unreachable for more than 1 minute."
+          runbook_url: "https://wiki.example.com/runbooks/node-down"
+
+      - alert: NodeUnreachable
+        expr: |
+          sum by (node) (
+            changes(node_boot_time_seconds[5m])
+          ) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Node {{ $labels.node }} has rebooted"
+          description: "Node {{ $labels.node }} has rebooted. Check if this was planned."
+
+      - alert: NodeDiskPressure
+        expr: |
+          (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) * 100 < 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Node {{ $labels.instance }} disk space low"
+          description: "Node {{ $labels.instance }} has less than 10% disk space available."
+
+  # ==========================================================================
+  # Memory Usage Alerts
+  # Task 4.3: High memory usage (>90%) on any service
+  # ==========================================================================
+  - name: memory-alerts
+    rules:
+      - alert: HighMemoryUsage
+        expr: |
+          (
+            container_memory_usage_bytes{container_label_com_docker_swarm_service_name!=""}
+            / 
+            container_spec_memory_limit_bytes{container_label_com_docker_swarm_service_name!=""}
+          ) * 100 > 90
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage on service {{ $labels.container_label_com_docker_swarm_service_name }}"
+          description: "Container {{ $labels.name }} is using {{ $value | printf \"%.1f\" }}% of its memory limit."
+          runbook_url: "https://wiki.example.com/runbooks/high-memory"
+
+      - alert: CriticalMemoryUsage
+        expr: |
+          (
+            container_memory_usage_bytes{container_label_com_docker_swarm_service_name!=""}
+            / 
+            container_spec_memory_limit_bytes{container_label_com_docker_swarm_service_name!=""}
+          ) * 100 > 95
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Critical memory usage on {{ $labels.container_label_com_docker_swarm_service_name }}"
+          description: "Container {{ $labels.name }} is using {{ $value | printf \"%.1f\" }}% of memory - OOM kill imminent!"
+
+      - alert: NodeHighMemoryUsage
+        expr: |
+          (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 90
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage on node {{ $labels.instance }}"
+          description: "Node {{ $labels.instance }} memory usage is above 90%."
+
+  # ==========================================================================
+  # API Response Time Alerts
+  # Task 4.3: Backend API response time exceeds threshold
+  # ==========================================================================
+  - name: api-latency-alerts
+    rules:
+      - alert: HighAPILatency
+        expr: |
+          histogram_quantile(0.95, 
+            sum(rate(http_request_duration_seconds_bucket{service="backend"}[5m])) by (le, method, path)
+          ) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High API latency on {{ $labels.method }} {{ $labels.path }}"
+          description: "95th percentile latency is {{ $value | printf \"%.2f\" }}s for {{ $labels.method }} {{ $labels.path }}."
+
+      - alert: CriticalAPILatency
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(http_request_duration_seconds_bucket{service="backend"}[5m])) by (le)
+          ) > 5
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Critical API latency detected"
+          description: "99th percentile API latency exceeds 5 seconds. Users are experiencing severe delays."
+
+      # Traefik-based latency monitoring
+      - alert: TraefikHighLatency
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(traefik_service_request_duration_seconds_bucket[5m])) by (le, service)
+          ) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High latency on service {{ $labels.service }}"
+          description: "95th percentile request duration is {{ $value | printf \"%.2f\" }}s."
+
+  # ==========================================================================
+  # Database Connection Alerts
+  # Task 4.3: Database connection failures
+  # ==========================================================================
+  - name: database-alerts
+    rules:
+      - alert: PostgresDown
+        expr: up{job="postgres"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: postgres
+        annotations:
+          summary: "PostgreSQL database is down"
+          description: "PostgreSQL on {{ $labels.instance }} has been unreachable for more than 1 minute."
+          runbook_url: "https://wiki.example.com/runbooks/postgres-down"
+
+      - alert: PostgresConnectionsHigh
+        expr: |
+          pg_stat_activity_count{state="active"} > 100
+        for: 5m
+        labels:
+          severity: warning
+          service: postgres
+        annotations:
+          summary: "High number of PostgreSQL connections"
+          description: "PostgreSQL has {{ $value }} active connections."
+
+      - alert: RedisDown
+        expr: up{job="redis"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: redis
+        annotations:
+          summary: "Redis cache is down"
+          description: "Redis on {{ $labels.instance }} is unreachable."
+
+      - alert: RedisHighMemory
+        expr: |
+          redis_memory_used_bytes / redis_memory_max_bytes * 100 > 80
+        for: 5m
+        labels:
+          severity: warning
+          service: redis
+        annotations:
+          summary: "Redis memory usage high"
+          description: "Redis is using {{ $value | printf \"%.1f\" }}% of max memory."
+
+  # ==========================================================================
+  # Container Health Alerts
+  # ==========================================================================
+  - name: container-alerts
+    rules:
+      - alert: ContainerHighRestarts
+        expr: |
+          increase(container_restart_count{container_label_com_docker_swarm_service_name!=""}[1h]) > 5
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container {{ $labels.name }} has high restart count"
+          description: "Container {{ $labels.name }} has restarted {{ $value }} times in the last hour."
+
+      - alert: ContainerCPUThrottling
+        expr: |
+          rate(container_cpu_cfs_throttled_seconds_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container {{ $labels.name }} is being CPU throttled"
+          description: "Container is being throttled. Consider increasing CPU limits."
+
+  # ==========================================================================
+  # Swarm Cluster Alerts
+  # ==========================================================================
+  - name: swarm-cluster-alerts
+    rules:
+      - alert: SwarmManagerQuorumRisk
+        expr: |
+          count(swarm_node_info{role="manager"}) < 2
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Swarm manager quorum at risk"
+          description: "Less than 2 manager nodes are available. Cluster at risk of losing quorum."
+
+      - alert: SwarmNodeNotReady
+        expr: |
+          swarm_node_info{availability="active", state!="ready"} == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Swarm node {{ $labels.hostname }} is not ready"
+          description: "Node {{ $labels.hostname }} is active but not in ready state."

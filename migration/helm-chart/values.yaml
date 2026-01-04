@@ -1,0 +1,143 @@
+# Default values for microservices-app
+# Task 6.2: Helm Chart Conversion
+# =============================================================================
+
+# Global settings
+global:
+  imageRegistry: ""
+  imagePullSecrets: []
+  storageClass: ""
+
+# Frontend configuration
+frontend:
+  replicaCount: 3
+  image:
+    repository: node
+    tag: "18-alpine"
+    pullPolicy: IfNotPresent
+  
+  resources:
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+    requests:
+      cpu: "250m"
+      memory: "256Mi"
+  
+  service:
+    type: ClusterIP
+    port: 3000
+  
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 80
+
+# Backend configuration
+backend:
+  replicaCount: 3
+  image:
+    repository: node
+    tag: "18-alpine"
+    pullPolicy: IfNotPresent
+  
+  resources:
+    limits:
+      cpu: "1000m"
+      memory: "1024Mi"
+    requests:
+      cpu: "500m"
+      memory: "512Mi"
+  
+  service:
+    type: ClusterIP
+    port: 5000
+  
+  env:
+    NODE_ENV: production
+    PORT: "5000"
+  
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 15
+    targetCPUUtilizationPercentage: 70
+
+# PostgreSQL configuration
+postgresql:
+  enabled: true
+  auth:
+    username: appuser
+    database: appdb
+    existingSecret: db-credentials
+  primary:
+    persistence:
+      enabled: true
+      size: 10Gi
+    resources:
+      limits:
+        cpu: "1000m"
+        memory: "2048Mi"
+      requests:
+        cpu: "500m"
+        memory: "1024Mi"
+
+# Redis configuration
+redis:
+  enabled: true
+  architecture: standalone
+  auth:
+    enabled: false
+  master:
+    persistence:
+      enabled: true
+      size: 1Gi
+    resources:
+      limits:
+        cpu: "500m"
+        memory: "512Mi"
+      requests:
+        cpu: "250m"
+        memory: "256Mi"
+
+# Ingress configuration
+ingress:
+  enabled: true
+  className: traefik
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+  hosts:
+    - host: app.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+          service: frontend
+        - path: /api
+          pathType: Prefix
+          service: backend
+  tls:
+    - secretName: app-tls
+      hosts:
+        - app.example.com
+
+# Network Policies
+networkPolicies:
+  enabled: true
+
+# Pod Disruption Budget
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# ServiceAccount
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+# Node selection
+nodeSelector: {}
+tolerations: []
+affinity: {}

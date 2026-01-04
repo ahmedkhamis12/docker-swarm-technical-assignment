@@ -1,0 +1,220 @@
+# Monitoring Stack for Docker Swarm
+# Task 4.1: Prometheus, Grafana, Node Exporter, cAdvisor
+# 
+# Deploy with: docker stack deploy -c docker-compose.monitoring.yml monitoring
+# =============================================================================
+
+version: '3.8'
+
+networks:
+  monitoring:
+    external: true
+    # Use the monitoring network created in main stack
+  public:
+    external: true
+    # For Grafana access via Traefik
+
+volumes:
+  prometheus_data:
+    # Prometheus data persistence
+  grafana_data:
+    # Grafana dashboards and settings
+  alertmanager_data:
+    # AlertManager data
+
+configs:
+  prometheus_config:
+    file: ./prometheus.yml
+  alertmanager_config:
+    file: ./alertmanager.yml
+  alert_rules:
+    file: ./alert-rules.yml
+
+services:
+  # ==========================================================================
+  # Prometheus - Metrics Collection and Alerting
+  # ==========================================================================
+  prometheus:
+    image: prom/prometheus:v2.47.0
+    networks:
+      - monitoring
+      - public
+    volumes:
+      - prometheus_data:/prometheus
+    configs:
+      - source: prometheus_config
+        target: /etc/prometheus/prometheus.yml
+      - source: alert_rules
+        target: /etc/prometheus/alert-rules.yml
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=15d'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
+      # Enable reload via API: curl -X POST http://prometheus:9090/-/reload
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1024M
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.prometheus.rule=Host(`prometheus.example.com`)"
+        - "traefik.http.routers.prometheus.entrypoints=websecure"
+        - "traefik.http.routers.prometheus.tls=true"
+        - "traefik.http.services.prometheus.loadbalancer.server.port=9090"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ==========================================================================
+  # Grafana - Visualization and Dashboards
+  # ==========================================================================
+  grafana:
+    image: grafana/grafana:10.1.0
+    networks:
+      - monitoring
+      - public
+    volumes:
+      - grafana_data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      # Change in production! Use secrets for real deployments
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=https://grafana.example.com
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel,grafana-clock-panel
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.grafana.rule=Host(`grafana.example.com`)"
+        - "traefik.http.routers.grafana.entrypoints=websecure"
+        - "traefik.http.routers.grafana.tls=true"
+        - "traefik.http.services.grafana.loadbalancer.server.port=3000"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ==========================================================================
+  # AlertManager - Alert Handling and Notification
+  # ==========================================================================
+  alertmanager:
+    image: prom/alertmanager:v0.26.0
+    networks:
+      - monitoring
+    volumes:
+      - alertmanager_data:/alertmanager
+    configs:
+      - source: alertmanager_config
+        target: /etc/alertmanager/alertmanager.yml
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+      - '--web.external-url=http://alertmanager:9093'
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9093/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ==========================================================================
+  # Node Exporter - Host Metrics (deployed globally on all nodes)
+  # ==========================================================================
+  node-exporter:
+    image: prom/node-exporter:v1.6.1
+    networks:
+      - monitoring
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--path.rootfs=/rootfs'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    deploy:
+      mode: global
+      # Deploy on ALL nodes in the swarm
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: 64M
+        reservations:
+          cpus: '0.05'
+          memory: 32M
+
+  # ==========================================================================
+  # cAdvisor - Container Metrics
+  # ==========================================================================
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.47.2
+    networks:
+      - monitoring
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    deploy:
+      mode: global
+      # Deploy on ALL nodes for container metrics
+      resources:
+        limits:
+          cpus: '0.2'
+          memory: 128M
+        reservations:
+          cpus: '0.1'
+          memory: 64M
+
+  # ==========================================================================
+  # Docker Swarm Service Discovery for Prometheus
+  # This sidecar helps Prometheus discover services dynamically
+  # ==========================================================================
+  dockerd-exporter:
+    image: stefanprodan/dockerd-exporter:latest
+    networks:
+      - monitoring
+    environment:
+      - IN=172.18.0.1:9323  # Docker daemon metrics
+      - OUT=9323
+    deploy:
+      mode: global
+      resources:
+        limits:
+          cpus: '0.05'
+          memory: 32M
